@@ -1,13 +1,64 @@
-# Parallelized-Neural-Network-for-MNIST
- 
-This program presents a parallel implementation for a neural network, following closely the Python code found here: https://www.kaggle.com/code/wwsalmon/simple-mnist-nn-from-scratch-numpy-no-tf-keras/notebook. My neural network classifies handwritten digits from the MNIST dataset (https://yann.lecun.com/exdb/mnist/). I use the MNIST.go package to load this data. Each image is 28x28 pixels and is represented as a 784-element long array. The network contains 3 layers - one input, one hidden, and one output. I write a set of matrix operations (mimicking operations found in NumPy, albeit less optimized), and operations for gradient descent, forward propagation, and backpropagation - the tools that ultimately allow the network to learn a set of weights and biases that can make accurate inferences on unseen test data.
+# Parallelized Neural Network for MNIST
 
-My implementation includes:
+Ensemble training of neural networks on the MNIST handwritten digit dataset using work-stealing and work-balancing parallelism. All matrix operations, gradient descent, forward propagation, and backpropagation are implemented from scratch in Go — no external ML libraries.
 
-An input/output component that allows the program to read data.
+## How It Works
 
-A sequential implementation.
+The network (784 → 10 → 10, ReLU + Softmax) is trained via **data-parallel ensemble learning**: the 60,000 training images are split into 60 chunks of 1,000, each chunk trains an independent model, and the final weights and biases are averaged.
 
-Two parallel implementations: A work-stealing and work-balancing algorithm using an unbounded dequeue implemented as a linked list. The neural network is parallelized in an ensemble fashion, i.e. training multiple models and then averaging the weights and biases.
+Two parallel schedulers distribute these training tasks across goroutines:
 
-Matrix operations are written from scratch for adding, subtracting, and multiplying matrices to matrices and matrices to and from scalars.
+- **Work-stealing** — each worker has a local deque; idle workers steal tasks from a random peer
+- **Work-balancing** — workers probabilistically rebalance queues when load asymmetry exceeds a threshold
+
+Both are compared against a sequential baseline.
+
+## Architecture
+
+```
+editor/editor.go            # CLI entry point — parses mode, threads, epochs
+scheduler/
+├── scheduler.go            # Orchestration: sequential vs parallel execution
+├── neuralnetwork.go        # Forward/back prop, gradient descent, ensemble averaging
+└── helpers.go              # MNIST loading, normalization, data transposition
+concurrent/
+├── concurrent.go           # Interfaces: Runnable, Future, ExecutorService
+├── stealing.go             # Work-stealing executor with per-worker deques
+├── balancing.go            # Work-balancing executor with probabilistic rebalancing
+└── unbounded.go            # Lock-protected unbounded deque (doubly-linked list)
+mnist/mnist.go              # MNIST binary format parser
+benchmark/
+├── benchmark-proj3.sh      # SLURM cluster job script
+└── speedup.py              # Speedup analysis across thread counts and epochs
+```
+
+## Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Ensemble averaging over data parallelism within a single model | Eliminates gradient synchronization overhead — each worker trains independently |
+| Unbounded deque via linked list | Simplifies growth without resize logic; bidirectional access supports both consumer and thief |
+| Probabilistic balancing trigger (1/(n+1)) | Reduces balancing overhead when queues are already well-loaded |
+| All matrix ops from scratch | Course requirement — demonstrates understanding of the underlying linear algebra |
+
+## Usage
+
+```bash
+cd neuralnetwork
+go build -o nn ./editor
+
+# Sequential: 25 epochs
+./nn 25 s
+
+# Work-stealing: 25 epochs, 8 threads
+./nn 25 ws 8
+
+# Work-balancing: 25 epochs, 8 threads
+./nn 25 wb 8
+```
+
+MNIST data files (`train-images-idx3-ubyte.gz`, etc.) should be in the working directory.
+
+## Tech Stack
+
+Go (no external dependencies)
